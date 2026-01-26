@@ -19,6 +19,16 @@ export type LatestUsage = {
     timestamp: number
 }
 
+function sortBlocksByCreatedAt(blocks: ChatBlock[]): ChatBlock[] {
+    return blocks
+        .map((block, index) => ({ block, index }))
+        .sort((a, b) => {
+            const delta = a.block.createdAt - b.block.createdAt
+            return delta !== 0 ? delta : a.index - b.index
+        })
+        .map(({ block }) => block)
+}
+
 export function reduceChatBlocks(
     normalized: NormalizedMessage[],
     agentState: AgentState | null | undefined
@@ -52,7 +62,7 @@ export function reduceChatBlocks(
         if (toolIdsInMessages.has(id)) continue
         if (rootResult.toolBlocksById.has(id)) continue
 
-        const createdAt = entry.permission.createdAt ?? Date.now()
+        const createdAt = entry.permission.createdAt ?? entry.permission.completedAt ?? Date.now()
         const block = ensureToolBlock(rootResult.blocks, rootResult.toolBlocksById, id, {
             createdAt,
             localId: null,
@@ -77,6 +87,8 @@ export function reduceChatBlocks(
         }
     }
 
+    const blocks = sortBlocksByCreatedAt(rootResult.blocks)
+
     // Calculate latest usage from messages (find the most recent message with usage data)
     let latestUsage: LatestUsage | null = null
     for (let i = normalized.length - 1; i >= 0; i--) {
@@ -94,5 +106,5 @@ export function reduceChatBlocks(
         }
     }
 
-    return { blocks: dedupeAgentEvents(foldApiErrorEvents(rootResult.blocks)), hasReadyEvent, latestUsage }
+    return { blocks: dedupeAgentEvents(foldApiErrorEvents(blocks)), hasReadyEvent, latestUsage }
 }
