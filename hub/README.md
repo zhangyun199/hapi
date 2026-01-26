@@ -24,6 +24,20 @@ See `src/configuration.ts` for all options.
 - `TELEGRAM_BOT_TOKEN` - Token from @BotFather.
 - `HAPI_PUBLIC_URL` - Public HTTPS URL for Telegram Mini App access. Also used to derive default CORS origins for the web app.
 
+### Optional (Bark)
+
+- `BARK_KEY` - Bark device key (enables Bark notifications; env-only, not persisted).
+- `BARK_NOTIFICATION` - Enable/disable Bark notifications (default: true; persisted as `barkNotification`).
+- `BARK_BASE_URL` - Bark server URL (default: https://api.day.app; persisted as `barkBaseUrl`).
+- `BARK_GROUP` - Optional notification group (defaults to per-session grouping; persisted as `barkGroup`).
+- `BARK_SOUND` - Optional notification sound (persisted as `barkSound`).
+- `BARK_ICON` - Optional notification icon URL (persisted as `barkIcon`).
+- `BARK_TIMEOUT_MS` - Request timeout in ms (default: 5000; persisted as `barkTimeoutMs`).
+- `BARK_NOTIFY_WHEN_CONTROLLED_BY_USER` - Send even in local mode (default: false; persisted as `barkNotifyWhenControlledByUser`).
+- `BARK_NOTIFY_WHEN_VISIBLE` - Send even when web app is visible (default: false; persisted as `barkNotifyWhenVisible`).
+
+Non-secret options can be provided via env and will be saved into `settings.json` for future runs (env > file > default).
+
 ### Optional (Voice)
 
 - `ELEVENLABS_API_KEY` - ElevenLabs API key for voice assistant.

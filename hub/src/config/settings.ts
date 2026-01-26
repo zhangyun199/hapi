@@ -18,6 +18,15 @@ export interface Settings {
     listenPort?: number
     publicUrl?: string
     corsOrigins?: string[]
+    // Bark configuration (non-secret; key remains env-only)
+    barkNotification?: boolean
+    barkBaseUrl?: string
+    barkGroup?: string
+    barkSound?: string
+    barkIcon?: string
+    barkTimeoutMs?: number
+    barkNotifyWhenControlledByUser?: boolean
+    barkNotifyWhenVisible?: boolean
     // Legacy field names (for migration, read-only)
     webappHost?: string
     webappPort?: number
@@ -66,6 +75,6 @@ export async function writeSettings(settingsFile: string, settings: Settings): P
     }
 
     const tmpFile = settingsFile + '.tmp'
-    await writeFile(tmpFile, JSON.stringify(settings, null, 2))
+    await writeFile(tmpFile, JSON.stringify(settings, null, 2), { encoding: 'utf8' })
     await rename(tmpFile, settingsFile)
 }

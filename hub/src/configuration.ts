@@ -3,7 +3,7 @@
  *
  * Configuration is loaded with priority: environment variable > settings.json > default
  * When values are read from environment variables and not present in settings.json,
- * they are automatically saved for future use
+ * they are automatically saved for future use (except env-only secrets like BARK_KEY)
  *
  * Optional environment variables:
  * - CLI_API_TOKEN: Shared secret for hapi CLI authentication (auto-generated if not set)
@@ -11,6 +11,17 @@
  * - TELEGRAM_NOTIFICATION: Enable/disable Telegram notifications (default: true)
  * - HAPI_LISTEN_HOST: Host/IP to bind the HTTP service (default: 127.0.0.1)
  * - HAPI_LISTEN_PORT: Port for HTTP service (default: 3006)
+ * - BARK_KEY: Bark device key (enables Bark notifications; env-only, not persisted)
+ * - BARK_NOTIFICATION: Enable/disable Bark notifications (default: true; persisted)
+ * - BARK_BASE_URL: Bark server URL (default: https://api.day.app; persisted)
+ * - BARK_GROUP: Optional Bark notification group (persisted)
+ * - BARK_SOUND: Optional Bark notification sound (persisted)
+ * - BARK_ICON: Optional notification icon URL (persisted)
+ * - BARK_TIMEOUT_MS: Request timeout in ms (default: 5000; persisted)
+ * - BARK_NOTIFY_WHEN_CONTROLLED_BY_USER: Send even in local mode (default: false; persisted)
+ * - BARK_NOTIFY_WHEN_VISIBLE: Send even when web app is visible (default: false; persisted)
+ * - HAPI_LISTEN_HOST: Host/IP to bind the HTTP server (default: 127.0.0.1)
+ * - HAPI_LISTEN_PORT: Port for HTTP server (default: 3006)
  * - HAPI_PUBLIC_URL: Public URL for external access (e.g., Telegram Mini App)
  * - CORS_ORIGINS: Comma-separated CORS origins
  * - HAPI_RELAY_API: Relay API domain for tunwg (default: relay.hapi.run)
@@ -33,6 +44,14 @@ export type ConfigSource = 'env' | 'file' | 'default'
 export interface ConfigSources {
     telegramBotToken: ConfigSource
     telegramNotification: ConfigSource
+    barkNotification: ConfigSource
+    barkBaseUrl: ConfigSource
+    barkGroup: ConfigSource
+    barkSound: ConfigSource
+    barkIcon: ConfigSource
+    barkTimeoutMs: ConfigSource
+    barkNotifyWhenControlledByUser: ConfigSource
+    barkNotifyWhenVisible: ConfigSource
     listenHost: ConfigSource
     listenPort: ConfigSource
     publicUrl: ConfigSource
@@ -49,6 +68,30 @@ class Configuration {
 
     /** Telegram notifications enabled */
     public readonly telegramNotification: boolean
+
+    /** Bark notifications enabled (requires env BARK_KEY) */
+    public readonly barkNotification: boolean
+
+    /** Bark server base URL */
+    public readonly barkBaseUrl: string
+
+    /** Bark notification group (null = per-session grouping) */
+    public readonly barkGroup: string | null
+
+    /** Bark notification sound */
+    public readonly barkSound: string | null
+
+    /** Bark notification icon URL */
+    public readonly barkIcon: string | null
+
+    /** Bark request timeout in ms */
+    public readonly barkTimeoutMs: number
+
+    /** Send Bark notifications even in local mode */
+    public readonly barkNotifyWhenControlledByUser: boolean
+
+    /** Send Bark notifications even when web app is visible */
+    public readonly barkNotifyWhenVisible: boolean
 
     /** CLI auth token (shared secret) */
     public cliApiToken: string
@@ -98,6 +141,14 @@ class Configuration {
         this.telegramBotToken = serverSettings.telegramBotToken
         this.telegramEnabled = Boolean(this.telegramBotToken)
         this.telegramNotification = serverSettings.telegramNotification
+        this.barkNotification = serverSettings.barkNotification
+        this.barkBaseUrl = serverSettings.barkBaseUrl
+        this.barkGroup = serverSettings.barkGroup
+        this.barkSound = serverSettings.barkSound
+        this.barkIcon = serverSettings.barkIcon
+        this.barkTimeoutMs = serverSettings.barkTimeoutMs
+        this.barkNotifyWhenControlledByUser = serverSettings.barkNotifyWhenControlledByUser
+        this.barkNotifyWhenVisible = serverSettings.barkNotifyWhenVisible
         this.listenHost = serverSettings.listenHost
         this.listenPort = serverSettings.listenPort
         this.publicUrl = serverSettings.publicUrl

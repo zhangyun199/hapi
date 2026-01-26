@@ -13,6 +13,7 @@ import { Store } from './store'
 import { SyncEngine, type SyncEvent } from './sync/syncEngine'
 import { NotificationHub } from './notifications/notificationHub'
 import type { NotificationChannel } from './notifications/notificationTypes'
+import { BarkNotificationChannel } from './notifications/barkNotificationChannel'
 import { HappyBot } from './telegram/bot'
 import { startWebServer } from './web/server'
 import { getOrCreateJwtSecret } from './config/jwtSecret'
@@ -150,6 +151,16 @@ async function main() {
         console.log(`[Hub] Telegram notifications: ${config.telegramNotification ? 'enabled' : 'disabled'} (${notificationSource})`)
     }
 
+    const barkKey = process.env.BARK_KEY || null
+    const barkNotificationsEnabled = Boolean(barkKey) && config.barkNotification
+
+    if (!barkKey) {
+        console.log('[Server] Bark: disabled (no BARK_KEY)')
+    } else {
+        const source = formatSource(config.sources.barkNotification)
+        console.log(`[Server] Bark notifications: ${barkNotificationsEnabled ? 'enabled' : 'disabled'} (${source})`)
+    }
+
     // Display tunnel status
     if (relayFlag.enabled) {
         console.log(`[Hub] Tunnel: enabled (${relayFlag.source}), API: ${relayApiDomain}`)
@@ -200,6 +211,21 @@ async function main() {
         if (config.telegramNotification) {
             notificationChannels.push(happyBot)
         }
+    }
+
+    if (barkKey && barkNotificationsEnabled) {
+        notificationChannels.push(new BarkNotificationChannel({
+            key: barkKey,
+            baseUrl: config.barkBaseUrl,
+            appUrl: config.publicUrl,
+            visibilityTracker,
+            group: config.barkGroup ?? undefined,
+            sound: config.barkSound ?? undefined,
+            icon: config.barkIcon ?? undefined,
+            timeoutMs: config.barkTimeoutMs,
+            notifyWhenControlledByUser: config.barkNotifyWhenControlledByUser,
+            notifyWhenVisible: config.barkNotifyWhenVisible
+        }))
     }
 
     notificationHub = new NotificationHub(syncEngine, notificationChannels)

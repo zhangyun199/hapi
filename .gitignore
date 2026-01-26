@@ -7,6 +7,9 @@
 **/dist-exe/
 **/*.tsbuildinfo
 hub/src/web/embeddedAssets.generated.ts
+cli/.*.bun-build
+server/src/web/embeddedAssets.generated.ts
+.history
 
 # Downloaded tools (fetched at build time)
 hub/tools/tunwg/tunwg-*

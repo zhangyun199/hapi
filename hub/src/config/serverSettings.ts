@@ -13,6 +13,14 @@ import { getSettingsFile, readSettings, writeSettings } from './settings'
 export interface ServerSettings {
     telegramBotToken: string | null
     telegramNotification: boolean
+    barkNotification: boolean
+    barkBaseUrl: string
+    barkGroup: string | null
+    barkSound: string | null
+    barkIcon: string | null
+    barkTimeoutMs: number
+    barkNotifyWhenControlledByUser: boolean
+    barkNotifyWhenVisible: boolean
     listenHost: string
     listenPort: number
     publicUrl: string
@@ -24,12 +32,48 @@ export interface ServerSettingsResult {
     sources: {
         telegramBotToken: 'env' | 'file' | 'default'
         telegramNotification: 'env' | 'file' | 'default'
+        barkNotification: 'env' | 'file' | 'default'
+        barkBaseUrl: 'env' | 'file' | 'default'
+        barkGroup: 'env' | 'file' | 'default'
+        barkSound: 'env' | 'file' | 'default'
+        barkIcon: 'env' | 'file' | 'default'
+        barkTimeoutMs: 'env' | 'file' | 'default'
+        barkNotifyWhenControlledByUser: 'env' | 'file' | 'default'
+        barkNotifyWhenVisible: 'env' | 'file' | 'default'
         listenHost: 'env' | 'file' | 'default'
         listenPort: 'env' | 'file' | 'default'
         publicUrl: 'env' | 'file' | 'default'
         corsOrigins: 'env' | 'file' | 'default'
     }
     savedToFile: boolean
+}
+
+function normalizeOptionalString(value: unknown): string | null {
+    if (typeof value !== 'string') {
+        return null
+    }
+
+    const trimmed = value.trim()
+    return trimmed ? trimmed : null
+}
+
+function parsePositiveInteger(value: unknown): number | null {
+    if (typeof value === 'number') {
+        if (!Number.isFinite(value) || value <= 0) {
+            return null
+        }
+        return Math.floor(value)
+    }
+
+    if (typeof value === 'string') {
+        const parsed = Number.parseInt(value, 10)
+        if (!Number.isFinite(parsed) || parsed <= 0) {
+            return null
+        }
+        return parsed
+    }
+
+    return null
 }
 
 /**
@@ -87,6 +131,14 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
     const sources: ServerSettingsResult['sources'] = {
         telegramBotToken: 'default',
         telegramNotification: 'default',
+        barkNotification: 'default',
+        barkBaseUrl: 'default',
+        barkGroup: 'default',
+        barkSound: 'default',
+        barkIcon: 'default',
+        barkTimeoutMs: 'default',
+        barkNotifyWhenControlledByUser: 'default',
+        barkNotifyWhenVisible: 'default',
         listenHost: 'default',
         listenPort: 'default',
         publicUrl: 'default',
@@ -118,6 +170,139 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
     } else if (settings.telegramNotification !== undefined) {
         telegramNotification = settings.telegramNotification
         sources.telegramNotification = 'file'
+    }
+
+    // barkNotification: env > file > true (default enabled)
+    let barkNotification = true
+    if (process.env.BARK_NOTIFICATION !== undefined) {
+        barkNotification = process.env.BARK_NOTIFICATION === 'true'
+        sources.barkNotification = 'env'
+        if (settings.barkNotification === undefined) {
+            settings.barkNotification = barkNotification
+            needsSave = true
+        }
+    } else if (settings.barkNotification !== undefined) {
+        barkNotification = settings.barkNotification
+        sources.barkNotification = 'file'
+    }
+
+    // barkBaseUrl: env > file > default
+    let barkBaseUrl = 'https://api.day.app'
+    if (process.env.BARK_BASE_URL) {
+        const normalized = normalizeOptionalString(process.env.BARK_BASE_URL)
+        if (normalized) {
+            barkBaseUrl = normalized
+            sources.barkBaseUrl = 'env'
+            if (settings.barkBaseUrl === undefined) {
+                settings.barkBaseUrl = barkBaseUrl
+                needsSave = true
+            }
+        }
+    } else if (settings.barkBaseUrl !== undefined) {
+        const normalized = normalizeOptionalString(settings.barkBaseUrl)
+        if (normalized) {
+            barkBaseUrl = normalized
+            sources.barkBaseUrl = 'file'
+        }
+    }
+
+    // barkGroup: env > file > null
+    let barkGroup: string | null = null
+    if (process.env.BARK_GROUP) {
+        const normalized = normalizeOptionalString(process.env.BARK_GROUP)
+        if (normalized) {
+            barkGroup = normalized
+            sources.barkGroup = 'env'
+            if (settings.barkGroup === undefined) {
+                settings.barkGroup = barkGroup
+                needsSave = true
+            }
+        }
+    } else if (settings.barkGroup !== undefined) {
+        barkGroup = normalizeOptionalString(settings.barkGroup)
+        sources.barkGroup = 'file'
+    }
+
+    // barkSound: env > file > null
+    let barkSound: string | null = null
+    if (process.env.BARK_SOUND) {
+        const normalized = normalizeOptionalString(process.env.BARK_SOUND)
+        if (normalized) {
+            barkSound = normalized
+            sources.barkSound = 'env'
+            if (settings.barkSound === undefined) {
+                settings.barkSound = barkSound
+                needsSave = true
+            }
+        }
+    } else if (settings.barkSound !== undefined) {
+        barkSound = normalizeOptionalString(settings.barkSound)
+        sources.barkSound = 'file'
+    }
+
+    // barkIcon: env > file > null
+    let barkIcon: string | null = null
+    if (process.env.BARK_ICON) {
+        const normalized = normalizeOptionalString(process.env.BARK_ICON)
+        if (normalized) {
+            barkIcon = normalized
+            sources.barkIcon = 'env'
+            if (settings.barkIcon === undefined) {
+                settings.barkIcon = barkIcon
+                needsSave = true
+            }
+        }
+    } else if (settings.barkIcon !== undefined) {
+        barkIcon = normalizeOptionalString(settings.barkIcon)
+        sources.barkIcon = 'file'
+    }
+
+    // barkTimeoutMs: env > file > 5000
+    let barkTimeoutMs = 5_000
+    if (process.env.BARK_TIMEOUT_MS) {
+        const parsed = parsePositiveInteger(process.env.BARK_TIMEOUT_MS)
+        if (parsed) {
+            barkTimeoutMs = parsed
+            sources.barkTimeoutMs = 'env'
+            if (settings.barkTimeoutMs === undefined) {
+                settings.barkTimeoutMs = barkTimeoutMs
+                needsSave = true
+            }
+        }
+    } else if (settings.barkTimeoutMs !== undefined) {
+        const parsed = parsePositiveInteger(settings.barkTimeoutMs)
+        if (parsed) {
+            barkTimeoutMs = parsed
+            sources.barkTimeoutMs = 'file'
+        }
+    }
+
+    // barkNotifyWhenControlledByUser: env > file > false
+    let barkNotifyWhenControlledByUser = false
+    if (process.env.BARK_NOTIFY_WHEN_CONTROLLED_BY_USER !== undefined) {
+        barkNotifyWhenControlledByUser = process.env.BARK_NOTIFY_WHEN_CONTROLLED_BY_USER === 'true'
+        sources.barkNotifyWhenControlledByUser = 'env'
+        if (settings.barkNotifyWhenControlledByUser === undefined) {
+            settings.barkNotifyWhenControlledByUser = barkNotifyWhenControlledByUser
+            needsSave = true
+        }
+    } else if (settings.barkNotifyWhenControlledByUser !== undefined) {
+        barkNotifyWhenControlledByUser = settings.barkNotifyWhenControlledByUser
+        sources.barkNotifyWhenControlledByUser = 'file'
+    }
+
+    // barkNotifyWhenVisible: env > file > false
+    let barkNotifyWhenVisible = false
+    if (process.env.BARK_NOTIFY_WHEN_VISIBLE !== undefined) {
+        barkNotifyWhenVisible = process.env.BARK_NOTIFY_WHEN_VISIBLE === 'true'
+        sources.barkNotifyWhenVisible = 'env'
+        if (settings.barkNotifyWhenVisible === undefined) {
+            settings.barkNotifyWhenVisible = barkNotifyWhenVisible
+            needsSave = true
+        }
+    } else if (settings.barkNotifyWhenVisible !== undefined) {
+        barkNotifyWhenVisible = settings.barkNotifyWhenVisible
+        sources.barkNotifyWhenVisible = 'file'
     }
 
     // listenHost: env > file (new or old name) > default
@@ -212,6 +397,14 @@ export async function loadServerSettings(dataDir: string): Promise<ServerSetting
         settings: {
             telegramBotToken,
             telegramNotification,
+            barkNotification,
+            barkBaseUrl,
+            barkGroup,
+            barkSound,
+            barkIcon,
+            barkTimeoutMs,
+            barkNotifyWhenControlledByUser,
+            barkNotifyWhenVisible,
             listenHost,
             listenPort,
             publicUrl,
