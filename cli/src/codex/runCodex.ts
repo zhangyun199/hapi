@@ -11,6 +11,7 @@ import { createModeChangeHandler, createRunnerLifecycle, setControlledByUser } f
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol';
 import { PermissionModeSchema } from '@hapi/protocol/schemas';
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
+import { ApiClient } from '@/api/api';
 
 export { emitReadyIfIdle } from './utils/emitReadyIfIdle';
 
@@ -29,12 +30,54 @@ export async function runCodex(opts: {
     let state: AgentState = {
         controlledByUser: false
     };
-    const { api, session } = await bootstrapSession({
+    const resumeTarget = opts.resumeSessionId
+
+    const resolveExistingHapiSessionId = async (): Promise<string | null> => {
+        if (!resumeTarget) {
+            return null
+        }
+
+        const api = await ApiClient.create()
+
+        try {
+            const session = await api.getSession({ sessionId: resumeTarget })
+            const isCodex = session.metadata?.flavor === 'codex' || Boolean(session.metadata?.codexSessionId)
+            if (isCodex) {
+                logger.debug(`[codex] resume target resolved as HAPI sessionId: ${resumeTarget}`)
+                return resumeTarget
+            }
+            logger.debug(`[codex] resume target is not a codex session, ignoring: ${resumeTarget}`)
+        } catch (error: any) {
+            const status = typeof error?.response?.status === 'number' ? error.response.status : null
+            const isNotFound = status === 404
+            const isDenied = status === 403
+            if (!isNotFound && !isDenied) {
+                throw error
+            }
+        }
+
+        const found = await api.findSessionByCodexSessionId({ codexSessionId: resumeTarget })
+        if (found) {
+            logger.debug(`[codex] resume target resolved via codexSessionId lookup: ${resumeTarget} -> ${found.id}`)
+        }
+        return found?.id ?? null
+    }
+
+    const existingSessionId = await resolveExistingHapiSessionId()
+
+    // Ambiguous "resume" argument handling:
+    // - If it matches an existing HAPI session ID, reattach to that session (no duplicate session).
+    // - Else, if it matches metadata.codexSessionId of a stored HAPI session, reattach to that session.
+    // - Otherwise treat it as a Codex thread/session ID and create a new HAPI session (legacy behavior).
+    const bootstrap = await bootstrapSession({
         flavor: 'codex',
         startedBy,
         workingDirectory,
-        agentState: state
+        agentState: state,
+        existingSessionId: existingSessionId ?? undefined,
+        fallbackToNewSessionIfMissing: true
     });
+    const { api, session } = bootstrap;
 
     const startingMode: 'local' | 'remote' = startedBy === 'runner' ? 'remote' : 'local';
 
@@ -133,6 +176,24 @@ export async function runCodex(opts: {
     });
 
     try {
+        const effectiveResumeSessionId = (() => {
+            if (!resumeTarget) {
+                return undefined;
+            }
+            if (!bootstrap.existingSession) {
+                return resumeTarget;
+            }
+
+            const codexSessionId = bootstrap.sessionInfo.metadata?.codexSessionId;
+            if (typeof codexSessionId === 'string' && codexSessionId.length > 0) {
+                return codexSessionId;
+            }
+
+            throw new Error('Cannot resume: target HAPI session is missing metadata.codexSessionId');
+        })();
+
+        const shouldBackfillHistory = Boolean(resumeTarget) && !bootstrap.existingSession;
+
         await loop({
             path: workingDirectory,
             startingMode,
@@ -143,7 +204,8 @@ export async function runCodex(opts: {
             codexCliOverrides,
             startedBy,
             permissionMode: currentPermissionMode,
-            resumeSessionId: opts.resumeSessionId,
+            resumeSessionId: effectiveResumeSessionId,
+            shouldBackfillHistory,
             onModeChange: createModeChangeHandler(session),
             onSessionReady: (instance) => {
                 sessionWrapperRef.current = instance;

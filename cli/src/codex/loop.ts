@@ -29,6 +29,7 @@ interface LoopOptions {
     codexCliOverrides?: CodexCliOverrides;
     permissionMode?: PermissionMode;
     resumeSessionId?: string;
+    shouldBackfillHistory?: boolean;
     onSessionReady?: (session: CodexSession) => void;
 }
 
@@ -41,6 +42,7 @@ export async function loop(opts: LoopOptions): Promise<void> {
         client: opts.session,
         path: opts.path,
         sessionId: opts.resumeSessionId ?? null,
+        shouldBackfillHistory: opts.shouldBackfillHistory === true,
         logPath,
         messageQueue: opts.messageQueue,
         onModeChange: opts.onModeChange,

@@ -8,11 +8,13 @@ import { BaseLocalLauncher } from '@/modules/common/launcher/BaseLocalLauncher';
 
 export async function codexLocalLauncher(session: CodexSession): Promise<'switch' | 'exit'> {
     const resumeSessionId = session.sessionId;
-    let scanner: Awaited<ReturnType<typeof createCodexSessionScanner>> | null = null;
 
     // Start hapi hub for MCP bridge (same as remote mode)
     const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client);
     logger.debug(`[codex-local]: Started hapi MCP bridge server at ${happyServer.url}`);
+
+    let scanner: Awaited<ReturnType<typeof createCodexSessionScanner>> | null = null;
+    let pendingSessionId: string | null = null;
 
     const handleSessionFound = (sessionId: string) => {
         session.onSessionFound(sessionId);
@@ -56,6 +58,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
         sessionId: resumeSessionId,
         cwd: session.path,
         startupTimestampMs: Date.now(),
+        backfillHistory: session.shouldBackfillHistory,
         onSessionMatchFailed: handleSessionMatchFailed,
         onSessionFound: (sessionId) => {
             session.onSessionFound(sessionId);
@@ -64,7 +67,11 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
             const converted = convertCodexEvent(event);
             if (converted?.sessionId) {
                 session.onSessionFound(converted.sessionId);
-                scanner?.onNewSession(converted.sessionId);
+                if (scanner) {
+                    scanner.onNewSession(converted.sessionId);
+                } else {
+                    pendingSessionId = converted.sessionId;
+                }
             }
             if (converted?.userMessage) {
                 session.sendUserMessage(converted.userMessage);
@@ -75,6 +82,11 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
         }
     });
 
+    if (pendingSessionId) {
+        scanner.onNewSession(pendingSessionId);
+        pendingSessionId = null;
+    }
+
     try {
         return await launcher.run();
     } finally {
@@ -83,3 +95,4 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
         logger.debug('[codex-local]: Stopped hapi MCP bridge server');
     }
 }
+

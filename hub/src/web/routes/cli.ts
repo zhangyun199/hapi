@@ -14,6 +14,10 @@ const createOrLoadSessionSchema = z.object({
     agentState: z.unknown().nullable().optional()
 })
 
+const lookupCodexSessionSchema = z.object({
+    codexSessionId: z.string().min(1)
+})
+
 const createOrLoadMachineSchema = z.object({
     id: z.string().min(1),
     metadata: z.unknown(),
@@ -101,6 +105,37 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
 
         const namespace = c.get('namespace')
         const session = engine.getOrCreateSession(parsed.data.tag, parsed.data.metadata, parsed.data.agentState ?? null, namespace)
+        return c.json({ session })
+    })
+
+    app.get('/sessions/lookup', (c) => {
+        const engine = getSyncEngine()
+        if (!engine) {
+            return c.json({ error: 'Not ready' }, 503)
+        }
+
+        const parsed = lookupCodexSessionSchema.safeParse(c.req.query())
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid query' }, 400)
+        }
+
+        const namespace = c.get('namespace')
+        const codexSessionId = parsed.data.codexSessionId
+
+        const matches = engine.getSessionsByNamespace(namespace)
+            .filter((session) => session.metadata?.codexSessionId === codexSessionId)
+            .sort((a, b) => {
+                if (a.active !== b.active) {
+                    return a.active ? -1 : 1
+                }
+                return b.updatedAt - a.updatedAt
+            })
+
+        const session = matches[0]
+        if (!session) {
+            return c.json({ error: 'Session not found' }, 404)
+        }
+
         return c.json({ session })
     })
 

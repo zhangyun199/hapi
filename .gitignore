@@ -14,6 +14,7 @@ server/src/web/embeddedAssets.generated.ts
 # Downloaded tools (fetched at build time)
 hub/tools/tunwg/tunwg-*
 hub/tools/tunwg/*.exe
+server/tools/tunwg/tunwg-*
 
 # Env files (can contain secrets)
 **/.env

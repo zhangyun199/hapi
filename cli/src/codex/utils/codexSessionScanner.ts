@@ -13,6 +13,14 @@ interface CodexSessionScannerOptions {
     cwd?: string;
     startupTimestampMs?: number;
     sessionStartWindowMs?: number;
+    /**
+     * When true, the scanner will emit existing events from the active session's
+     * JSONL file on startup (cursor starts at 0) instead of tailing from the end.
+     *
+     * This is useful when resuming an existing Codex thread into a brand new HAPI
+     * session so the Web UI can display the prior conversation history.
+     */
+    backfillHistory?: boolean;
 }
 
 interface CodexSessionScanner {
@@ -74,6 +82,7 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
     private readonly sessionStartWindowMs: number;
     private readonly matchDeadlineMs: number;
     private readonly sessionDatePrefixes: Set<string> | null;
+    private readonly backfillHistory: boolean;
 
     private activeSessionId: string | null;
     private reportedSessionId: string | null;
@@ -96,6 +105,7 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
         this.sessionDatePrefixes = this.targetCwd
             ? getSessionDatePrefixes(this.referenceTimestampMs, this.sessionStartWindowMs)
             : null;
+        this.backfillHistory = opts.backfillHistory === true;
 
         logger.debug(`[CODEX_SESSION_SCANNER] Init: targetCwd=${this.targetCwd ?? 'none'} startupTs=${new Date(this.referenceTimestampMs).toISOString()} windowMs=${this.sessionStartWindowMs}`);
     }
@@ -131,7 +141,13 @@ class CodexSessionScannerImpl extends BaseSessionScanner<CodexSessionEvent> {
         const files = await this.listSessionFiles(this.sessionsRoot);
         for (const filePath of files) {
             const { nextCursor } = await this.readSessionFile(filePath, 0);
-            this.setCursor(filePath, nextCursor);
+            const activeSessionId = this.activeSessionId;
+            const isActiveSessionFile = Boolean(activeSessionId)
+                && (this.sessionIdByFile.get(filePath) === activeSessionId || filePath.endsWith(`-${activeSessionId}.jsonl`));
+
+            // Default: tail the file from the end to avoid replaying history.
+            // Backfill mode: start from 0 for the active session file so we emit history into a fresh HAPI session.
+            this.setCursor(filePath, isActiveSessionFile && this.backfillHistory ? 0 : nextCursor);
             if (this.shouldWatchFile(filePath)) {
                 this.ensureWatcher(filePath);
             }

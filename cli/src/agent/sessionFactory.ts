@@ -21,6 +21,8 @@ export type SessionBootstrapOptions = {
     workingDirectory?: string
     tag?: string
     agentState?: AgentState | null
+    existingSessionId?: string
+    fallbackToNewSessionIfMissing?: boolean
 }
 
 export type SessionBootstrapResult = {
@@ -31,6 +33,7 @@ export type SessionBootstrapResult = {
     machineId: string
     startedBy: SessionStartedBy
     workingDirectory: string
+    existingSession: boolean
 }
 
 export function buildMachineMetadata(): MachineMetadata {
@@ -121,13 +124,64 @@ export async function bootstrapSession(options: SessionBootstrapOptions): Promis
         machineId
     })
 
-    const sessionInfo = await api.getOrCreateSession({
-        tag: sessionTag,
-        metadata,
-        state: agentState
-    })
+    const existingSessionId = options.existingSessionId
+    const shouldFallback = options.fallbackToNewSessionIfMissing === true
+
+    let sessionInfo: Session
+    let existingSession = false
+
+    if (existingSessionId) {
+        try {
+            sessionInfo = await api.getSession({ sessionId: existingSessionId })
+            existingSession = true
+        } catch (error: any) {
+            const status = typeof error?.response?.status === 'number' ? error.response.status : null
+            const isNotFound = status === 404
+            const isDenied = status === 403
+            if (!shouldFallback || (!isNotFound && !isDenied)) {
+                throw error
+            }
+
+            sessionInfo = await api.getOrCreateSession({
+                tag: sessionTag,
+                metadata,
+                state: agentState
+            })
+        }
+    } else {
+        sessionInfo = await api.getOrCreateSession({
+            tag: sessionTag,
+            metadata,
+            state: agentState
+        })
+    }
 
     const session = api.sessionSyncClient(sessionInfo)
+
+    if (existingSession) {
+        // Refresh runtime metadata fields on attach without clobbering existing session-specific fields (e.g. codexSessionId).
+        session.updateMetadata((current) => ({
+            ...current,
+            path: metadata.path,
+            host: metadata.host,
+            version: metadata.version,
+            os: metadata.os,
+            machineId: metadata.machineId,
+            homeDir: metadata.homeDir,
+            happyHomeDir: metadata.happyHomeDir,
+            happyLibDir: metadata.happyLibDir,
+            happyToolsDir: metadata.happyToolsDir,
+            startedFromRunner: metadata.startedFromRunner,
+            startedBy: metadata.startedBy,
+            hostPid: metadata.hostPid,
+            lifecycleState: metadata.lifecycleState,
+            lifecycleStateSince: metadata.lifecycleStateSince,
+            worktree: metadata.worktree,
+            // If a session was previously archived, clear the archive metadata on reattach.
+            archivedBy: undefined,
+            archiveReason: undefined
+        }))
+    }
 
     await reportSessionStarted(sessionInfo.id, metadata)
 
@@ -138,6 +192,7 @@ export async function bootstrapSession(options: SessionBootstrapOptions): Promis
         metadata,
         machineId,
         startedBy,
-        workingDirectory
+        workingDirectory,
+        existingSession
     }
 }

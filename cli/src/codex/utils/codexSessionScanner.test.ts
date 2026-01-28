@@ -74,6 +74,29 @@ describe('codexSessionScanner', () => {
         expect(events[0].type).toBe('response_item');
     });
 
+    it('emits existing events on startup when backfillHistory is enabled', async () => {
+        const sessionId = 'session-456';
+        sessionFile = join(sessionsDir, `codex-${sessionId}.jsonl`);
+
+        const initialLines = [
+            JSON.stringify({ type: 'session_meta', payload: { id: sessionId } }),
+            JSON.stringify({ type: 'event_msg', payload: { type: 'agent_message', message: 'hello' } })
+        ];
+
+        await writeFile(sessionFile, initialLines.join('\n') + '\n');
+
+        scanner = await createCodexSessionScanner({
+            sessionId,
+            backfillHistory: true,
+            onEvent: (event) => events.push(event)
+        });
+
+        await wait(200);
+        expect(events.length).toBeGreaterThanOrEqual(2);
+        expect(events[0].type).toBe('session_meta');
+        expect(events[1].type).toBe('event_msg');
+    });
+
     it('limits session scan to dates within the start window', async () => {
         const referenceTimestampMs = Date.parse('2025-12-22T00:00:00.000Z');
         const windowMs = 2 * 60 * 1000;

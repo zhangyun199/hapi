@@ -49,6 +49,7 @@ export class ApiSessionClient extends EventEmitter {
     private hasConnectedOnce = false
     readonly rpcHandlerManager: RpcHandlerManager
     private readonly terminalManager: TerminalManager
+    private commonHandlersPath: string | null = null
     private agentStateLock = new AsyncLock()
     private metadataLock = new AsyncLock()
 
@@ -67,7 +68,7 @@ export class ApiSessionClient extends EventEmitter {
         })
 
         if (this.metadata?.path) {
-            registerCommonHandlers(this.rpcHandlerManager, this.metadata.path)
+            this.ensureCommonHandlers(this.metadata.path)
         }
 
         this.socket = io(`${configuration.apiUrl}/cli`, {
@@ -172,6 +173,7 @@ export class ApiSessionClient extends EventEmitter {
 
                 if (data.body.t === 'update-session') {
                     if (data.body.metadata && data.body.metadata.version > this.metadataVersion) {
+                        const previousPath = this.metadata?.path
                         const parsed = MetadataSchema.safeParse(data.body.metadata.value)
                         if (parsed.success) {
                             this.metadata = parsed.data
@@ -179,6 +181,10 @@ export class ApiSessionClient extends EventEmitter {
                             logger.debug('[API] Ignoring invalid metadata update', { version: data.body.metadata.version })
                         }
                         this.metadataVersion = data.body.metadata.version
+                        const nextPath = this.metadata?.path
+                        if (nextPath && nextPath !== previousPath) {
+                            this.ensureCommonHandlers(nextPath)
+                        }
                     }
                     if (data.body.agentState && data.body.agentState.version > this.agentStateVersion) {
                         const next = data.body.agentState.value
@@ -204,6 +210,18 @@ export class ApiSessionClient extends EventEmitter {
         })
 
         this.socket.connect()
+    }
+
+    private ensureCommonHandlers(workingDirectory: string): void {
+        if (!workingDirectory) {
+            return
+        }
+        if (this.commonHandlersPath === workingDirectory) {
+            return
+        }
+        registerCommonHandlers(this.rpcHandlerManager, workingDirectory)
+        this.commonHandlersPath = workingDirectory
+        logger.debug(`[API] Registered common RPC handlers for path: ${workingDirectory}`)
     }
 
     onUserMessage(callback: (data: UserMessage) => void): void {
@@ -458,6 +476,7 @@ export class ApiSessionClient extends EventEmitter {
         this.metadataLock.inLock(async () => {
             await backoff(async () => {
                 const current = this.metadata ?? ({} as Metadata)
+                const previousPath = current.path
                 const updated = handler(current)
 
                 const answer = await this.socket.emitWithAck('update-metadata', {
@@ -474,6 +493,10 @@ export class ApiSessionClient extends EventEmitter {
                     },
                     applyValue: (value) => {
                         this.metadata = value
+                        const nextPath = value?.path
+                        if (nextPath && nextPath !== previousPath) {
+                            this.ensureCommonHandlers(nextPath)
+                        }
                     },
                     applyVersion: (version) => {
                         this.metadataVersion = version

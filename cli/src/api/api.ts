@@ -74,6 +74,117 @@ export class ApiClient {
         }
     }
 
+    async getSession(opts: { sessionId: string }): Promise<Session> {
+        const response = await axios.get<CreateSessionResponse>(
+            `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(opts.sessionId)}`,
+            {
+                headers: {
+                    Authorization: `Bearer ${this.token}`,
+                    'Content-Type': 'application/json'
+                },
+                timeout: 60_000
+            }
+        )
+
+        const parsed = CreateSessionResponseSchema.safeParse(response.data)
+        if (!parsed.success) {
+            throw apiValidationError('Invalid /cli/sessions/:id response', response)
+        }
+
+        const raw = parsed.data.session
+
+        const metadata = (() => {
+            if (raw.metadata == null) return null
+            const parsedMetadata = MetadataSchema.safeParse(raw.metadata)
+            return parsedMetadata.success ? parsedMetadata.data : null
+        })()
+
+        const agentState = (() => {
+            if (raw.agentState == null) return null
+            const parsedAgentState = AgentStateSchema.safeParse(raw.agentState)
+            return parsedAgentState.success ? parsedAgentState.data : null
+        })()
+
+        return {
+            id: raw.id,
+            namespace: raw.namespace,
+            seq: raw.seq,
+            createdAt: raw.createdAt,
+            updatedAt: raw.updatedAt,
+            active: raw.active,
+            activeAt: raw.activeAt,
+            metadata,
+            metadataVersion: raw.metadataVersion,
+            agentState,
+            agentStateVersion: raw.agentStateVersion,
+            thinking: raw.thinking,
+            thinkingAt: raw.thinkingAt,
+            todos: raw.todos,
+            permissionMode: raw.permissionMode,
+            modelMode: raw.modelMode
+        }
+    }
+
+    async findSessionByCodexSessionId(opts: { codexSessionId: string }): Promise<Session | null> {
+        try {
+            const response = await axios.get<CreateSessionResponse>(
+                `${configuration.apiUrl}/cli/sessions/lookup`,
+                {
+                    params: { codexSessionId: opts.codexSessionId },
+                    headers: {
+                        Authorization: `Bearer ${this.token}`,
+                        'Content-Type': 'application/json'
+                    },
+                    timeout: 60_000
+                }
+            )
+
+            const parsed = CreateSessionResponseSchema.safeParse(response.data)
+            if (!parsed.success) {
+                throw apiValidationError('Invalid /cli/sessions/lookup response', response)
+            }
+
+            const raw = parsed.data.session
+
+            const metadata = (() => {
+                if (raw.metadata == null) return null
+                const parsedMetadata = MetadataSchema.safeParse(raw.metadata)
+                return parsedMetadata.success ? parsedMetadata.data : null
+            })()
+
+            const agentState = (() => {
+                if (raw.agentState == null) return null
+                const parsedAgentState = AgentStateSchema.safeParse(raw.agentState)
+                return parsedAgentState.success ? parsedAgentState.data : null
+            })()
+
+            return {
+                id: raw.id,
+                namespace: raw.namespace,
+                seq: raw.seq,
+                createdAt: raw.createdAt,
+                updatedAt: raw.updatedAt,
+                active: raw.active,
+                activeAt: raw.activeAt,
+                metadata,
+                metadataVersion: raw.metadataVersion,
+                agentState,
+                agentStateVersion: raw.agentStateVersion,
+                thinking: raw.thinking,
+                thinkingAt: raw.thinkingAt,
+                todos: raw.todos,
+                permissionMode: raw.permissionMode,
+                modelMode: raw.modelMode
+            }
+        } catch (error: any) {
+            const status = typeof error?.response?.status === 'number' ? error.response.status : null
+            if (status === 404) {
+                return null
+            }
+            throw error
+        }
+    }
+
     async getOrCreateMachine(opts: {
         machineId: string
         metadata: MachineMetadata

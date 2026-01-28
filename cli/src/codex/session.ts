@@ -15,6 +15,7 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
     readonly codexCliOverrides?: CodexCliOverrides;
     readonly startedBy: 'runner' | 'terminal';
     readonly startingMode: 'local' | 'remote';
+    readonly shouldBackfillHistory: boolean;
     localLaunchFailure: LocalLaunchFailure | null = null;
 
     constructor(opts: {
@@ -23,6 +24,7 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         path: string;
         logPath: string;
         sessionId: string | null;
+        shouldBackfillHistory: boolean;
         messageQueue: MessageQueue2<EnhancedMode>;
         onModeChange: (mode: 'local' | 'remote') => void;
         mode?: 'local' | 'remote';
@@ -54,6 +56,7 @@ export class CodexSession extends AgentSessionBase<EnhancedMode> {
         this.codexCliOverrides = opts.codexCliOverrides;
         this.startedBy = opts.startedBy;
         this.startingMode = opts.startingMode;
+        this.shouldBackfillHistory = opts.shouldBackfillHistory;
         this.permissionMode = opts.permissionMode;
     }
 
