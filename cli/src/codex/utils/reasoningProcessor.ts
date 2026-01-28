@@ -2,11 +2,18 @@
  * Reasoning Processor - Handles streaming reasoning deltas and identifies reasoning tools
  * 
  * This processor accumulates agent_reasoning_delta events and identifies when
- * reasoning sections start with **[Title]** format, treating them as tool calls.
+ * reasoning sections start with **[Title]** (with brackets) format, treating them as tool calls.
+ *
+ * Note: We intentionally require the bracketed form `**[Title]**` here to avoid
+ * misclassifying normal markdown headings like `**Title**` (common in remote streams)
+ * as tool calls, which would render as "cards" in the web UI.
  */
 
 import { randomUUID } from 'node:crypto';
 import { logger } from '@/ui/logger';
+
+const TOOL_SECTION_PREFIX = '**[';
+const TOOL_SECTION_SUFFIX = ']**';
 
 export interface ReasoningToolCall {
     type: 'tool-call';
@@ -53,6 +60,24 @@ export class ReasoningProcessor {
     }
 
     /**
+     * Flush any buffered reasoning as a completed message.
+     *
+     * Some upstream streams emit `agent_reasoning_delta` but may omit a final
+     * `agent_reasoning` completion event. In those cases we still want the UI to
+     * display the reasoning collected so far.
+     *
+     * Returns the flushed text when a message was emitted.
+     */
+    flushCompleted(): string | null {
+        if (!this.accumulator) {
+            return null;
+        }
+        const flushed = this.accumulator;
+        this.complete(flushed);
+        return flushed;
+    }
+
+    /**
      * Set the message callback for sending messages directly
      */
     setMessageCallback(callback: (message: any) => void): void {
@@ -62,10 +87,27 @@ export class ReasoningProcessor {
     /**
      * Process a reasoning section break - indicates a new reasoning section is starting
      */
-    handleSectionBreak(): void {
-        this.finishCurrentToolCall('canceled');
-        this.resetState();
-        logger.debug('[ReasoningProcessor] Section break - reset state');
+    handleSectionBreak(): string | null {
+        let flushed: string | null = null;
+        // When we're modeling reasoning as a tool call (`**[Title]**`), a section break
+        // means we should finalize the current tool section and reset.
+        if (this.toolCallStarted || this.inTitleCapture || this.hasTitle) {
+            flushed = this.flushCompleted();
+            if (!flushed) {
+                this.resetState();
+            }
+            logger.debug('[ReasoningProcessor] Section break - reset tool section');
+            return flushed;
+        }
+
+        // Otherwise treat section breaks as formatting separators inside a single
+        // reasoning block (better UX than emitting separate "cards").
+        if (this.accumulator.length > 0 && !this.accumulator.endsWith('\n\n')) {
+            this.accumulator = this.accumulator.replace(/\n?$/, '\n\n');
+            this.contentBuffer = this.accumulator;
+        }
+        logger.debug('[ReasoningProcessor] Section break - inserted separator');
+        return null;
     }
 
     /**
@@ -76,25 +118,28 @@ export class ReasoningProcessor {
 
         // If we haven't started processing yet, check if this starts with **
         if (!this.inTitleCapture && !this.hasTitle && !this.contentBuffer) {
-            if (this.accumulator.startsWith('**')) {
+            if (this.accumulator.startsWith(TOOL_SECTION_PREFIX)) {
                 // Start title capture
                 this.inTitleCapture = true;
-                this.titleBuffer = this.accumulator.substring(2); // Remove leading **
+                this.titleBuffer = this.accumulator.substring(TOOL_SECTION_PREFIX.length); // Remove leading **[
                 logger.debug('[ReasoningProcessor] Started title capture');
+            } else if (TOOL_SECTION_PREFIX.startsWith(this.accumulator)) {
+                // Prefix may be arriving in multiple deltas; wait until we can decide.
+                return;
             } else if (this.accumulator.length > 0) {
                 // This is untitled reasoning, just accumulate as content
                 this.contentBuffer = this.accumulator;
             }
         } else if (this.inTitleCapture) {
             // We're capturing the title
-            this.titleBuffer = this.accumulator.substring(2); // Keep updating from start
+            this.titleBuffer = this.accumulator.substring(TOOL_SECTION_PREFIX.length); // Keep updating from start
             
-            // Check if we've found the closing **
-            const titleEndIndex = this.titleBuffer.indexOf('**');
+            // Check if we've found the closing ]**
+            const titleEndIndex = this.titleBuffer.indexOf(TOOL_SECTION_SUFFIX);
             if (titleEndIndex !== -1) {
                 // Found the end of title
                 const title = this.titleBuffer.substring(0, titleEndIndex);
-                const afterTitle = this.titleBuffer.substring(titleEndIndex + 2);
+                const afterTitle = this.titleBuffer.substring(titleEndIndex + TOOL_SECTION_SUFFIX.length);
                 
                 this.hasTitle = true;
                 this.inTitleCapture = false;
@@ -111,10 +156,8 @@ export class ReasoningProcessor {
             }
         } else if (this.hasTitle) {
             // We have a title, accumulate content after title
-            this.contentBuffer = this.accumulator.substring(
-                this.accumulator.indexOf('**') + 2 + 
-                this.currentTitle!.length + 2
-            );
+            const headerLength = TOOL_SECTION_PREFIX.length + this.currentTitle!.length + TOOL_SECTION_SUFFIX.length;
+            this.contentBuffer = this.accumulator.length >= headerLength ? this.accumulator.substring(headerLength) : '';
         } else {
             // Untitled reasoning, just accumulate
             this.contentBuffer = this.accumulator;
@@ -152,11 +195,11 @@ export class ReasoningProcessor {
         let title: string | undefined;
         let content: string = fullText;
         
-        if (fullText.startsWith('**')) {
-            const titleEndIndex = fullText.indexOf('**', 2);
+        if (fullText.startsWith(TOOL_SECTION_PREFIX)) {
+            const titleEndIndex = fullText.indexOf(TOOL_SECTION_SUFFIX, TOOL_SECTION_PREFIX.length);
             if (titleEndIndex !== -1) {
-                title = fullText.substring(2, titleEndIndex);
-                content = fullText.substring(titleEndIndex + 2).trim();
+                title = fullText.substring(TOOL_SECTION_PREFIX.length, titleEndIndex);
+                content = fullText.substring(titleEndIndex + TOOL_SECTION_SUFFIX.length).trim();
             }
         }
 

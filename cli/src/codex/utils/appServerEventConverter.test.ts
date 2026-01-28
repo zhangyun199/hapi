@@ -75,6 +75,9 @@ describe('AppServerEventConverter', () => {
 
         const events = converter.handleNotification('item/reasoning/textDelta', { itemId: 'r1', delta: 'step' });
         expect(events).toEqual([{ type: 'agent_reasoning_delta', delta: 'step' }]);
+
+        const summaryEvents = converter.handleNotification('item/reasoning/summaryTextDelta', { itemId: 'r1', delta: ' more' });
+        expect(summaryEvents).toEqual([{ type: 'agent_reasoning_delta', delta: ' more' }]);
     });
 
     it('maps diff updates', () => {

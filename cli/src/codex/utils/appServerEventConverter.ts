@@ -158,7 +158,7 @@ export class AppServerEventConverter {
             return events;
         }
 
-        if (method === 'item/reasoning/textDelta') {
+        if (method === 'item/reasoning/textDelta' || method === 'item/reasoning/summaryTextDelta') {
             const itemId = extractItemId(paramsRecord) ?? 'reasoning';
             const delta = asString(paramsRecord.delta ?? paramsRecord.text ?? paramsRecord.message);
             if (delta) {

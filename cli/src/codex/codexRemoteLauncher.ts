@@ -131,6 +131,7 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
         const mcpClient = this.mcpClient;
         const appServerClient = this.appServerClient;
         const appServerEventConverter = useAppServer ? new AppServerEventConverter() : null;
+        let flushedReasoningText: string | null = null;
 
         const normalizeCommand = (value: unknown): string | undefined => {
             if (typeof value === 'string') {
@@ -142,6 +143,22 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 return joined.length > 0 ? joined : undefined;
             }
             return undefined;
+        };
+        const flushReasoning = (): void => {
+            const flushed = reasoningProcessor.flushCompleted();
+            if (flushed) {
+                flushedReasoningText = flushed;
+            }
+        };
+        const shouldSuppressReasoning = (text: string): boolean => {
+            if (!flushedReasoningText) {
+                return false;
+            }
+            const normalizedText = text.trim();
+            const normalizedFlushed = flushedReasoningText.trim();
+            const isDuplicate = normalizedText === normalizedFlushed;
+            flushedReasoningText = null;
+            return isDuplicate;
         };
 
         const asRecord = (value: unknown): Record<string, unknown> | null => {
@@ -228,11 +245,15 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 return;
             }
 
+            const reasoningText = msgType === 'agent_reasoning' ? asString(msg.text) : null;
+            const skipReasoning = reasoningText ? shouldSuppressReasoning(reasoningText) : false;
+
             if (msgType === 'task_started') {
                 const turnId = asString(msg.turn_id ?? msg.turnId);
                 if (turnId) {
                     this.currentTurnId = turnId;
                 }
+                flushedReasoningText = null;
             }
 
             if (msgType === 'task_complete' || msgType === 'turn_aborted' || msgType === 'task_failed') {
@@ -255,9 +276,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     messageBuffer.addMessage(message, 'assistant');
                 }
             } else if (msgType === 'agent_reasoning') {
-                const text = asString(msg.text);
-                if (text) {
-                    messageBuffer.addMessage(`[Thinking] ${text.substring(0, 100)}...`, 'system');
+                if (reasoningText && !skipReasoning) {
+                    messageBuffer.addMessage(`[Thinking] ${reasoningText.substring(0, 100)}...`, 'system');
                 }
             } else if (msgType === 'exec_command_begin') {
                 const command = normalizeCommand(msg.command) ?? 'command';
@@ -297,12 +317,18 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 if (useAppServer) {
                     turnInFlight = false;
                 }
+                if (useAppServer) {
+                    // In app-server mode we may only see streaming reasoning deltas; ensure the
+                    // currently buffered reasoning (if any) is flushed when the turn ends.
+                    flushReasoning();
+                    permissionHandler.reset();
+                    appServerEventConverter?.reset();
+                }
                 if (session.thinking) {
                     logger.debug('thinking completed');
                     session.onThinkingChange(false);
                 }
                 diffProcessor.reset();
-                appServerEventConverter?.reset();
             }
             if (msgType === 'agent_reasoning_section_break') {
                 reasoningProcessor.handleSectionBreak();
@@ -310,13 +336,16 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             if (msgType === 'agent_reasoning_delta') {
                 const delta = asString(msg.delta);
                 if (delta) {
+                    flushedReasoningText = null;
                     reasoningProcessor.processDelta(delta);
                 }
             }
             if (msgType === 'agent_reasoning') {
-                const text = asString(msg.text);
-                if (text) {
-                    reasoningProcessor.complete(text);
+                if (reasoningText) {
+                    if (skipReasoning) {
+                        return;
+                    }
+                    reasoningProcessor.complete(reasoningText);
                 }
             }
             if (msgType === 'agent_message') {
@@ -330,6 +359,9 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 }
             }
             if (msgType === 'exec_command_begin' || msgType === 'exec_approval_request') {
+                // Flush any buffered reasoning before starting a tool call so the UI keeps the
+                // expected ordering: reasoning → tool.
+                flushReasoning();
                 const callId = asString(msg.call_id ?? msg.callId);
                 if (callId) {
                     const inputs: Record<string, unknown> = { ...msg };
@@ -369,6 +401,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 });
             }
             if (msgType === 'patch_apply_begin') {
+                // Flush any buffered reasoning before file changes are shown as a tool call.
+                flushReasoning();
                 const callId = asString(msg.call_id ?? msg.callId);
                 if (callId) {
                     const changes = asRecord(msg.changes) ?? {};
@@ -666,12 +700,16 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     }
                 }
             } finally {
-                permissionHandler.reset();
-                reasoningProcessor.abort();
-                diffProcessor.reset();
-                appServerEventConverter?.reset();
-                session.onThinkingChange(false);
+                // In app-server mode, turn/start can return while the turn is still in-flight and
+                // streaming events continue to arrive asynchronously. If we reset state here we can
+                // incorrectly flip thinking=false and drop buffered reasoning/diff output.
                 if (!useAppServer || !turnInFlight) {
+                    permissionHandler.reset();
+                    reasoningProcessor.abort();
+                    diffProcessor.reset();
+                    appServerEventConverter?.reset();
+                    session.onThinkingChange(false);
+
                     emitReadyIfIdle({
                         pending,
                         queueSize: () => session.queue.size(),
