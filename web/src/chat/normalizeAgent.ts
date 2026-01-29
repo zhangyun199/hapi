@@ -364,6 +364,24 @@ export function normalizeAgentRecord(
                 meta
             }
         }
+
+        if (data.type === 'token_count') {
+            const info = isObject((data as Record<string, unknown>).info)
+                ? (data as Record<string, unknown>).info
+                : null
+            return {
+                id: messageId,
+                localId,
+                createdAt,
+                role: 'event',
+                content: {
+                    type: 'token_count',
+                    info
+                },
+                isSidechain: false,
+                meta
+            }
+        }
     }
 
     return null

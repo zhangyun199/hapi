@@ -32,6 +32,10 @@ const PERMISSION_TONE_CLASSES: Record<PermissionModeTone, string> = {
     danger: 'text-red-500'
 }
 
+// Copied from Codex TUI (`codex-rs/protocol/src/protocol.rs`):
+// Includes prompts, tools and space to call compact.
+const CODEX_CONTEXT_BASELINE_TOKENS = 12_000
+
 function getConnectionStatus(
     active: boolean,
     thinking: boolean,
@@ -101,11 +105,38 @@ function getContextWarning(contextSize: number, maxContextSize: number, t: (key:
     }
 }
 
+function getCodexContextWarning(
+    contextTokensInWindow: number,
+    contextWindowTokens: number,
+    t: (key: string, params?: Record<string, string | number>) => string
+): { text: string; color: string } | null {
+    // Mirror Codex TUI: TokenUsage::percent_of_context_window_remaining().
+    // Note: Codex intentionally normalizes by a fixed baseline so the UI can show ~100% right after the
+    // first prompt, then trend toward 0% as the effective (user-controllable) window fills up.
+    if (contextWindowTokens <= CODEX_CONTEXT_BASELINE_TOKENS) {
+        return { text: t('misc.percentLeft', { percent: 0 }), color: 'text-red-500' }
+    }
+
+    const effectiveWindow = contextWindowTokens - CODEX_CONTEXT_BASELINE_TOKENS
+    const used = Math.max(0, contextTokensInWindow - CODEX_CONTEXT_BASELINE_TOKENS)
+    const remaining = Math.max(0, effectiveWindow - used)
+    const percent = Math.max(0, Math.min(100, Math.round((remaining / effectiveWindow) * 100)))
+
+    if (percent <= 5) {
+        return { text: t('misc.percentLeft', { percent }), color: 'text-red-500' }
+    } else if (percent <= 10) {
+        return { text: t('misc.percentLeft', { percent }), color: 'text-amber-500' }
+    } else {
+        return { text: t('misc.percentLeft', { percent }), color: 'text-[var(--app-hint)]' }
+    }
+}
+
 export function StatusBar(props: {
     active: boolean
     thinking: boolean
     agentState: AgentState | null | undefined
     contextSize?: number
+    contextLimitTokens?: number
     modelMode?: ModelMode
     permissionMode?: PermissionMode
     agentFlavor?: string | null
@@ -120,11 +151,17 @@ export function StatusBar(props: {
     const contextWarning = useMemo(
         () => {
             if (props.contextSize === undefined) return null
-            const maxContextSize = getContextBudgetTokens(props.modelMode)
+            // Codex percent should only be computed from Codex telemetry (token_count + model_context_window).
+            // Falling back to Claude budgets yields misleading numbers.
+            const maxContextSize = props.agentFlavor === 'codex'
+                ? (props.contextLimitTokens ?? null)
+                : (props.contextLimitTokens ?? getContextBudgetTokens(props.modelMode))
             if (!maxContextSize) return null
-            return getContextWarning(props.contextSize, maxContextSize, t)
+            return props.agentFlavor === 'codex'
+                ? getCodexContextWarning(props.contextSize, maxContextSize, t)
+                : getContextWarning(props.contextSize, maxContextSize, t)
         },
-        [props.contextSize, props.modelMode, t]
+        [props.contextSize, props.contextLimitTokens, props.modelMode, props.agentFlavor, t]
     )
 
     const permissionMode = props.permissionMode

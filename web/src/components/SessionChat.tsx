@@ -6,7 +6,7 @@ import type { AttachmentMetadata, DecryptedMessage, ModelMode, PermissionMode, S
 import type { ChatBlock, NormalizedMessage } from '@/chat/types'
 import type { Suggestion } from '@/hooks/useActiveSuggestions'
 import { normalizeDecryptedMessage } from '@/chat/normalize'
-import { reduceChatBlocks } from '@/chat/reducer'
+import { findLatestUsageFromMessages, reduceChatBlocks, type LatestUsage } from '@/chat/reducer'
 import { reconcileChatBlocks } from '@/chat/reconcile'
 import { HappyComposer } from '@/components/AssistantChat/HappyComposer'
 import { HappyThread } from '@/components/AssistantChat/HappyThread'
@@ -17,6 +17,12 @@ import { usePlatform } from '@/hooks/usePlatform'
 import { useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { useVoiceOptional } from '@/lib/voice-context'
 import { RealtimeVoiceSession, registerSessionStore, registerVoiceHooksStore, voiceHooks } from '@/realtime'
+
+function pickNewerUsage(a: LatestUsage | null, b: LatestUsage | null): LatestUsage | null {
+    if (!a) return b
+    if (!b) return a
+    return a.timestamp >= b.timestamp ? a : b
+}
 
 export function SessionChat(props: {
     api: ApiClient
@@ -43,6 +49,11 @@ export function SessionChat(props: {
     const sessionInactive = !props.session.active
     const normalizedCacheRef = useRef<Map<string, { source: DecryptedMessage; normalized: NormalizedMessage | null }>>(new Map())
     const blocksByIdRef = useRef<Map<string, ChatBlock>>(new Map())
+    const lastKnownUsageRef = useRef<LatestUsage | null>(null)
+    const lastKnownUsageSessionIdRef = useRef<string | null>(null)
+    const usageBootstrapRunIdRef = useRef(0)
+    const usageBootstrapRunningRef = useRef<{ sessionId: string; runId: number } | null>(null)
+    const [usageBootstrapRefreshToken, forceUsageBootstrapRefresh] = useState(0)
     const [forceScrollToken, setForceScrollToken] = useState(0)
     const agentFlavor = props.session.metadata?.flavor ?? null
     const { abortSession, switchSession, setPermissionMode, setModelMode } = useSessionActions(
@@ -144,6 +155,9 @@ export function SessionChat(props: {
     useEffect(() => {
         normalizedCacheRef.current.clear()
         blocksByIdRef.current.clear()
+        lastKnownUsageRef.current = null
+        lastKnownUsageSessionIdRef.current = props.session.id
+        usageBootstrapRunningRef.current = null
     }, [props.session.id])
 
     const normalizedMessages: NormalizedMessage[] = useMemo(() => {
@@ -173,6 +187,116 @@ export function SessionChat(props: {
         () => reduceChatBlocks(normalizedMessages, props.session.agentState),
         [normalizedMessages, props.session.agentState]
     )
+
+    // token_count telemetry can be outside the current message window (because we only keep a visible slice
+    // for performance). Cache the latest known usage (by timestamp) so the status bar doesn't "disappear"
+    // or regress when loading older history trims the newest messages out of the current window.
+    const cachedUsageForSession = lastKnownUsageSessionIdRef.current === props.session.id
+        ? lastKnownUsageRef.current
+        : null
+    const usageForStatus = useMemo(
+        () => pickNewerUsage(reduced.latestUsage, cachedUsageForSession),
+        [reduced.latestUsage, cachedUsageForSession, usageBootstrapRefreshToken]
+    )
+
+    useEffect(() => {
+        const cached = cachedUsageForSession
+        if (usageForStatus && usageForStatus !== cached) {
+            lastKnownUsageRef.current = usageForStatus
+            lastKnownUsageSessionIdRef.current = props.session.id
+        }
+    }, [usageForStatus, cachedUsageForSession, props.session.id])
+
+    // Bootstrap Codex usage without forcing the user to scroll into older history.
+    // We keep token_count out of the transcript, and message windows are trimmed for performance, so the
+    // latest token_count event may not be in the currently loaded slice.
+    useEffect(() => {
+        if (agentFlavor !== 'codex') return
+        if (props.isLoadingMessages || props.isLoadingMoreMessages) return
+        if (!props.hasMoreMessages) return
+        if (props.messages.length === 0) return
+        const cachedForSession = lastKnownUsageSessionIdRef.current === props.session.id
+            ? lastKnownUsageRef.current
+            : null
+        if (reduced.latestUsage || cachedForSession) return
+        if (usageBootstrapRunningRef.current) return
+
+        const bootstrapSessionId = props.session.id
+        const runId = usageBootstrapRunIdRef.current + 1
+        usageBootstrapRunIdRef.current = runId
+        usageBootstrapRunningRef.current = { sessionId: bootstrapSessionId, runId }
+        let cancelled = false
+
+        void (async () => {
+            try {
+                // Avoid re-fetching the latest page (the message window already loaded it). Start from
+                // the oldest currently loaded sequence so we page backwards into older history only.
+                let beforeSeq: number | null = null
+                for (const msg of props.messages) {
+                    if (typeof msg.seq !== 'number') continue
+                    beforeSeq = beforeSeq === null ? msg.seq : Math.min(beforeSeq, msg.seq)
+                }
+                const MAX_PAGES = 8
+                const PAGE_LIMIT = 200
+
+                for (let i = 0; i < MAX_PAGES && !cancelled; i++) {
+                    const response = await props.api.getMessages(bootstrapSessionId, { limit: PAGE_LIMIT, beforeSeq })
+                    if (cancelled) return
+                    const normalized = response.messages
+                        .map((msg) => normalizeDecryptedMessage(msg))
+                        .filter((msg): msg is NormalizedMessage => msg !== null)
+
+                    const found = findLatestUsageFromMessages(normalized)
+                    if (found) {
+                        if (cancelled) return
+                        const cached = lastKnownUsageSessionIdRef.current === bootstrapSessionId
+                            ? lastKnownUsageRef.current
+                            : null
+                        if (!cached || found.timestamp > cached.timestamp) {
+                            lastKnownUsageRef.current = found
+                            lastKnownUsageSessionIdRef.current = bootstrapSessionId
+                        }
+                        if (cancelled) return
+                        forceUsageBootstrapRefresh((v) => v + 1)
+                        return
+                    }
+
+                    if (!response.page.hasMore || response.page.nextBeforeSeq === null) {
+                        return
+                    }
+                    beforeSeq = response.page.nextBeforeSeq
+                }
+            } catch (error) {
+                // Best-effort: context remaining is a nice-to-have. Don't spam console in production.
+                if (import.meta.env.DEV) {
+                    console.debug('[SessionChat] Failed to bootstrap Codex token_count usage', error)
+                }
+            } finally {
+                const current = usageBootstrapRunningRef.current
+                if (current && current.runId === runId) {
+                    usageBootstrapRunningRef.current = null
+                }
+            }
+        })()
+
+        return () => {
+            cancelled = true
+            const current = usageBootstrapRunningRef.current
+            if (current && current.runId === runId) {
+                usageBootstrapRunningRef.current = null
+            }
+        }
+    }, [
+        agentFlavor,
+        props.api,
+        props.session.id,
+        props.isLoadingMessages,
+        props.isLoadingMoreMessages,
+        props.hasMoreMessages,
+        props.messages.length,
+        props.messagesVersion,
+        reduced.latestUsage,
+    ])
     const reconciled = useMemo(
         () => reconcileChatBlocks(reduced.blocks, blocksByIdRef.current),
         [reduced.blocks]
@@ -305,7 +429,8 @@ export function SessionChat(props: {
                         allowSendWhenInactive
                         thinking={props.session.thinking}
                         agentState={props.session.agentState}
-                        contextSize={reduced.latestUsage?.contextSize}
+                        contextSize={usageForStatus?.contextSize}
+                        contextLimitTokens={usageForStatus?.contextLimitTokens}
                         controlledByUser={props.session.agentState?.controlledByUser === true}
                         onPermissionModeChange={handlePermissionModeChange}
                         onModelModeChange={handleModelModeChange}

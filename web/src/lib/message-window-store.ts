@@ -58,7 +58,9 @@ function isVisiblePendingMessage(sessionId: string, message: DecryptedMessage): 
     if (cached && cached.source === message) {
         return cached.visible
     }
-    const visible = normalizeDecryptedMessage(message) !== null
+    const normalized = normalizeDecryptedMessage(message)
+    const visible = normalized !== null
+        && !(normalized.role === 'event' && normalized.content.type === 'token_count')
     cache.set(message.id, { source: message, visible })
     return visible
 }
@@ -205,13 +207,83 @@ function buildState(
 }
 
 function trimVisible(messages: DecryptedMessage[], mode: 'append' | 'prepend'): DecryptedMessage[] {
-    if (messages.length <= VISIBLE_WINDOW_SIZE) {
-        return messages
+    // The visible window should be sized by transcript-visible messages, not raw message count.
+    // In particular, Codex `token_count` telemetry events are intentionally not rendered, but they can be
+    // frequent enough to evict actual chat content if we window by `messages.length`.
+    //
+    // We keep:
+    // - Up to VISIBLE_WINDOW_SIZE transcript-visible messages (oldest-first for prepend, newest-first for append)
+    // - At most the latest `token_count` message (so status indicators can still use it)
+
+    const classify = (message: DecryptedMessage): 'visible' | 'token_count' | 'skip' => {
+        const normalized = normalizeDecryptedMessage(message)
+        if (!normalized) return 'skip'
+        if (normalized.role === 'event' && normalized.content.type === 'token_count') {
+            return 'token_count'
+        }
+        return 'visible'
     }
+
+    const findOldestMessageWithSeq = (list: DecryptedMessage[]): DecryptedMessage | null => {
+        let oldest: DecryptedMessage | null = null
+        let oldestSeq: number | null = null
+        for (const message of list) {
+            if (typeof message.seq !== 'number') continue
+            if (oldestSeq === null || message.seq < oldestSeq) {
+                oldestSeq = message.seq
+                oldest = message
+            }
+        }
+        return oldest
+    }
+
+    let latestTokenCount: DecryptedMessage | null = null
+    for (let i = messages.length - 1; i >= 0; i--) {
+        if (classify(messages[i]) === 'token_count') {
+            latestTokenCount = messages[i]
+            break
+        }
+    }
+
+    const visible: DecryptedMessage[] = []
+    let visibleCount = 0
+
     if (mode === 'prepend') {
-        return messages.slice(0, VISIBLE_WINDOW_SIZE)
+        for (let i = 0; i < messages.length; i++) {
+            if (visibleCount >= VISIBLE_WINDOW_SIZE) break
+            const kind = classify(messages[i])
+            if (kind !== 'visible') continue
+            visible.push(messages[i])
+            visibleCount += 1
+        }
+    } else {
+        for (let i = messages.length - 1; i >= 0; i--) {
+            if (visibleCount >= VISIBLE_WINDOW_SIZE) break
+            const kind = classify(messages[i])
+            if (kind !== 'visible') continue
+            visible.push(messages[i])
+            visibleCount += 1
+        }
+        visible.reverse()
     }
-    return messages.slice(messages.length - VISIBLE_WINDOW_SIZE)
+
+    const extras: DecryptedMessage[] = []
+
+    // When scrolling upwards, keep a cursor message with the oldest seq to ensure pagination advances
+    // even if a fetched page contains only non-visible telemetry events.
+    if (mode === 'prepend') {
+        const oldestBySeq = findOldestMessageWithSeq(messages)
+        if (oldestBySeq) {
+            extras.push(oldestBySeq)
+        }
+    }
+
+    // Always keep the latest token_count for computing context remaining.
+    if (latestTokenCount) {
+        extras.push(latestTokenCount)
+    }
+
+    return extras.length > 0 ? mergeMessages(visible, extras) : visible
 }
 
 function trimPending(

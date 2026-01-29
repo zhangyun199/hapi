@@ -24,6 +24,10 @@ export function reduceTimeline(
                 hasReadyEvent = true
                 continue
             }
+            if (msg.content.type === 'token_count') {
+                // token_count is a telemetry event used to compute context remaining; don't render in the transcript.
+                continue
+            }
             blocks.push({
                 kind: 'agent-event',
                 id: msg.id,
