@@ -2,11 +2,15 @@
 
 Run official Claude Code / Codex / Gemini / OpenCode sessions locally and control them remotely through a Web / PWA / Telegram Mini App.
 
+> 中文说明: [README.zh-CN.md](README.zh-CN.md)  
+> Forked from [tiann/hapi](https://github.com/tiann/hapi)
+
 > **Why HAPI?** HAPI is a local-first alternative to Happy. See [Why Not Happy?](docs/guide/why-hapi.md) for the key differences.
 
 ## Recent Changes
 
 - **Codex context remaining** - Shows "percent left" in the web composer status bar, aligned with Codex TUI.
+- **Codex session reattach** - Resume and reattach to an existing session via `codexSessionId` lookup.
 - **iOS PWA safe-area** - Chat composer respects `safe-area-inset-bottom` to avoid the home indicator overlap.
 - **Permission UX polish** - Prevents stacked permission prompts from hiding new incoming messages.
 - **Bark notifications** - Optional Bark push notifications for remote activity (configurable).
