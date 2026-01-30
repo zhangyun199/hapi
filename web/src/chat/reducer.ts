@@ -33,29 +33,70 @@ function pickTokenNumber(record: Record<string, unknown>, keys: string[]): numbe
     return null
 }
 
-function pickTokenUsageRecord(info: Record<string, unknown>): Record<string, unknown> {
-    const candidates: Array<Record<string, unknown> | null> = [
-        // Prefer "last" usage for context remaining (represents the most recent prompt/context size).
-        isObject(info.last_token_usage) ? info.last_token_usage as Record<string, unknown> : null,
-        isObject(info.lastTokenUsage) ? info.lastTokenUsage as Record<string, unknown> : null,
-        isObject(info.total_token_usage) ? info.total_token_usage as Record<string, unknown> : null,
-        isObject(info.totalTokenUsage) ? info.totalTokenUsage as Record<string, unknown> : null,
+function unwrapTokenUsageInfo(info: Record<string, unknown>): Record<string, unknown> {
+    const nested: Array<Record<string, unknown> | null> = [
+        info,
+        isObject(info.info) ? info.info as Record<string, unknown> : null,
         isObject(info.token_usage) ? info.token_usage as Record<string, unknown> : null,
         isObject(info.tokenUsage) ? info.tokenUsage as Record<string, unknown> : null,
-        isObject(info.usage) ? info.usage as Record<string, unknown> : null,
+    ]
+
+    const looksLikeTokenUsageInfo = (candidate: Record<string, unknown>) => {
+        // Support both Codex telemetry and app-server v2 payloads:
+        // - { last_token_usage, total_token_usage, model_context_window }
+        // - { lastTokenUsage, totalTokenUsage, modelContextWindow }
+        // - { last, total, modelContextWindow } (thread/tokenUsage/updated)
+        return (
+            'last_token_usage' in candidate
+            || 'lastTokenUsage' in candidate
+            || 'last' in candidate
+            || 'total_token_usage' in candidate
+            || 'totalTokenUsage' in candidate
+            || 'total' in candidate
+            || 'model_context_window' in candidate
+            || 'modelContextWindow' in candidate
+        )
+    }
+
+    for (const candidate of nested) {
+        if (candidate && looksLikeTokenUsageInfo(candidate)) {
+            return candidate
+        }
+    }
+
+    return info
+}
+
+function pickTokenUsageRecord(info: Record<string, unknown>): Record<string, unknown> {
+    const container = unwrapTokenUsageInfo(info)
+
+    const candidates: Array<Record<string, unknown> | null> = [
+        // Prefer "last" usage for context remaining (represents the most recent prompt/context size).
+        isObject(container.last_token_usage) ? container.last_token_usage as Record<string, unknown> : null,
+        isObject(container.lastTokenUsage) ? container.lastTokenUsage as Record<string, unknown> : null,
+        isObject(container.last) ? container.last as Record<string, unknown> : null,
+
+        // Fallbacks: if last is missing, show something instead of nothing.
+        isObject(container.total_token_usage) ? container.total_token_usage as Record<string, unknown> : null,
+        isObject(container.totalTokenUsage) ? container.totalTokenUsage as Record<string, unknown> : null,
+        isObject(container.total) ? container.total as Record<string, unknown> : null,
+
+        // Some legacy payloads may put counters at the top-level.
+        isObject(container.usage) ? container.usage as Record<string, unknown> : null,
     ]
 
     for (const candidate of candidates) {
         if (candidate) return candidate
     }
 
-    return info
+    return container
 }
 
 function extractTokenCountUsage(info: unknown): LatestUsage | null {
     if (!isObject(info)) return null
     const rootInfo = info as Record<string, unknown>
-    const usageInfo = pickTokenUsageRecord(rootInfo)
+    const containerInfo = unwrapTokenUsageInfo(rootInfo)
+    const usageInfo = pickTokenUsageRecord(containerInfo)
 
     const contextLimitKeys = [
         'model_context_window',
@@ -68,6 +109,7 @@ function extractTokenCountUsage(info: unknown): LatestUsage | null {
 
     const contextLimitTokens = (
         pickTokenNumber(rootInfo, contextLimitKeys)
+        ?? pickTokenNumber(containerInfo, contextLimitKeys)
         ?? pickTokenNumber(usageInfo, contextLimitKeys)
     ) ?? undefined
 

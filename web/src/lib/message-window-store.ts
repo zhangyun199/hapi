@@ -65,6 +65,77 @@ function isVisiblePendingMessage(sessionId: string, message: DecryptedMessage): 
     return visible
 }
 
+function isTokenCountMessage(message: DecryptedMessage): boolean {
+    const normalized = normalizeDecryptedMessage(message)
+    return Boolean(normalized && normalized.role === 'event' && normalized.content.type === 'token_count')
+}
+
+function findOldestMessageWithSeq(list: DecryptedMessage[]): DecryptedMessage | null {
+    let oldest: DecryptedMessage | null = null
+    let oldestSeq: number | null = null
+    for (const message of list) {
+        if (typeof message.seq !== 'number') continue
+        if (oldestSeq === null || message.seq < oldestSeq) {
+            oldestSeq = message.seq
+            oldest = message
+        }
+    }
+    return oldest
+}
+
+function pickLatestTokenCount(messages: DecryptedMessage[]): DecryptedMessage | null {
+    const candidates = messages.filter(isTokenCountMessage)
+    if (candidates.length === 0) return null
+    const sorted = mergeMessages([], candidates)
+    return sorted.length > 0 ? sorted[sorted.length - 1] : null
+}
+
+function updateVisibleWithLatestTokenCount(
+    visible: DecryptedMessage[],
+    candidates: DecryptedMessage[]
+): DecryptedMessage[] {
+    const cursor = findOldestMessageWithSeq(visible)
+    const cursorId = cursor?.id ?? null
+
+    const incomingLatest = pickLatestTokenCount(candidates)
+    if (!incomingLatest) return visible
+
+    const existingLatest = pickLatestTokenCount(visible)
+    const latest = pickLatestTokenCount(existingLatest ? [existingLatest, incomingLatest] : [incomingLatest])
+    if (!latest) return visible
+
+    // Keep the pagination cursor even if it's a token_count message.
+    const filtered = visible.filter((message) => {
+        if (!isTokenCountMessage(message)) {
+            return true
+        }
+        if (cursorId && message.id === cursorId) {
+            return true
+        }
+        return message.id === latest.id
+    })
+
+    // Avoid pointless churn when nothing changes.
+    if (filtered.length === visible.length) {
+        let identical = true
+        for (let i = 0; i < filtered.length; i++) {
+            if (filtered[i].id !== visible[i].id) {
+                identical = false
+                break
+            }
+        }
+        if (identical) {
+            return visible
+        }
+    }
+
+    if (filtered.some((message) => message.id === latest.id)) {
+        return filtered
+    }
+
+    return mergeMessages(filtered, [latest])
+}
+
 function countVisiblePendingMessages(sessionId: string, messages: DecryptedMessage[]): number {
     let count = 0
     for (const message of messages) {
@@ -222,19 +293,6 @@ function trimVisible(messages: DecryptedMessage[], mode: 'append' | 'prepend'): 
             return 'token_count'
         }
         return 'visible'
-    }
-
-    const findOldestMessageWithSeq = (list: DecryptedMessage[]): DecryptedMessage | null => {
-        let oldest: DecryptedMessage | null = null
-        let oldestSeq: number | null = null
-        for (const message of list) {
-            if (typeof message.seq !== 'number') continue
-            if (oldestSeq === null || message.seq < oldestSeq) {
-                oldestSeq = message.seq
-                oldest = message
-            }
-        }
-        return oldest
     }
 
     let latestTokenCount: DecryptedMessage | null = null
@@ -413,8 +471,11 @@ export async function fetchLatestMessages(api: ApiClient, sessionId: string): Pr
                     warning: null,
                 })
             }
-            const pendingResult = mergeIntoPending(prev, response.messages)
+            const nextMessages = updateVisibleWithLatestTokenCount(prev.messages, response.messages)
+            const pendingIncoming = response.messages.filter((message) => !isTokenCountMessage(message))
+            const pendingResult = mergeIntoPending(prev, pendingIncoming)
             return buildState(prev, {
+                messages: nextMessages,
                 pending: pendingResult.pending,
                 pendingVisibleCount: pendingResult.pendingVisibleCount,
                 pendingOverflowCount: pendingResult.pendingOverflowCount,
@@ -467,8 +528,11 @@ export function ingestIncomingMessages(sessionId: string, incoming: DecryptedMes
             const pending = filterPendingAgainstVisible(prev.pending, trimmed)
             return buildState(prev, { messages: trimmed, pending })
         }
-        const pendingResult = mergeIntoPending(prev, incoming)
+        const nextMessages = updateVisibleWithLatestTokenCount(prev.messages, incoming)
+        const pendingIncoming = incoming.filter((message) => !isTokenCountMessage(message))
+        const pendingResult = mergeIntoPending(prev, pendingIncoming)
         return buildState(prev, {
+            messages: nextMessages,
             pending: pendingResult.pending,
             pendingVisibleCount: pendingResult.pendingVisibleCount,
             pendingOverflowCount: pendingResult.pendingOverflowCount,
