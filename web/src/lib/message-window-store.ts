@@ -37,6 +37,7 @@ type PendingVisibilityCacheEntry = {
 const states = new Map<string, InternalState>()
 const listeners = new Map<string, Set<() => void>>()
 const pendingVisibilityCacheBySession = new Map<string, Map<string, PendingVisibilityCacheEntry>>()
+const latestTokenCountBySession = new Map<string, DecryptedMessage>()
 
 function getPendingVisibilityCache(sessionId: string): Map<string, PendingVisibilityCacheEntry> {
     const existing = pendingVisibilityCacheBySession.get(sessionId)
@@ -68,6 +69,17 @@ function isVisiblePendingMessage(sessionId: string, message: DecryptedMessage): 
 function isTokenCountMessage(message: DecryptedMessage): boolean {
     const normalized = normalizeDecryptedMessage(message)
     return Boolean(normalized && normalized.role === 'event' && normalized.content.type === 'token_count')
+}
+
+function rememberLatestTokenCount(sessionId: string, candidates: DecryptedMessage[]): void {
+    const incomingLatest = pickLatestTokenCount(candidates)
+    if (!incomingLatest) return
+
+    const existing = latestTokenCountBySession.get(sessionId) ?? null
+    const mergedLatest = pickLatestTokenCount(existing ? [existing, incomingLatest] : [incomingLatest])
+    if (mergedLatest) {
+        latestTokenCountBySession.set(sessionId, mergedLatest)
+    }
 }
 
 function findOldestMessageWithSeq(list: DecryptedMessage[]): DecryptedMessage | null {
@@ -160,9 +172,10 @@ function syncPendingVisibilityCache(sessionId: string, pending: DecryptedMessage
 }
 
 function createState(sessionId: string): InternalState {
+    const cachedTokenCount = latestTokenCountBySession.get(sessionId)
     return {
         sessionId,
-        messages: [],
+        messages: cachedTokenCount ? [cachedTokenCount] : [],
         pending: [],
         pendingCount: 0,
         pendingVisibleCount: 0,
@@ -456,6 +469,7 @@ export async function fetchLatestMessages(api: ApiClient, sessionId: string): Pr
 
     try {
         const response = await api.getMessages(sessionId, { limit: PAGE_SIZE, beforeSeq: null })
+        rememberLatestTokenCount(sessionId, response.messages)
         updateState(sessionId, (prev) => {
             if (prev.atBottom) {
                 const merged = mergeMessages(prev.messages, [...prev.pending, ...response.messages])
@@ -521,6 +535,7 @@ export function ingestIncomingMessages(sessionId: string, incoming: DecryptedMes
     if (incoming.length === 0) {
         return
     }
+    rememberLatestTokenCount(sessionId, incoming)
     updateState(sessionId, (prev) => {
         if (prev.atBottom) {
             const merged = mergeMessages(prev.messages, incoming)
